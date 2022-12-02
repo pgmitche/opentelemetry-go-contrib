@@ -9,6 +9,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	"go.opentelemetry.io/otel/trace"
 	"net"
+	"net/http"
 	"strings"
 )
 
@@ -54,7 +55,7 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			defer span.End()
 
 			// propagate the span in the outgoing request
-			inject(ctx, req, i.cfg.Propagators)
+			inject(ctx, req.Header(), i.cfg.Propagators)
 			res, err := next(ctx, req)
 			if err != nil {
 				// TODO: unpack more error info as attributes?
@@ -73,7 +74,7 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 
 			return res, err
 		} else {
-			ctx = extract(ctx, req, i.cfg.Propagators)
+			ctx = extract(ctx, req.Header(), i.cfg.Propagators)
 			name, attrs := buildSpanInfo(req.Spec().Procedure, req.Peer().Addr)
 			ctx, span := i.tracer.Start(
 				trace.ContextWithRemoteSpanContext(ctx, trace.SpanContextFromContext(ctx)),
@@ -111,20 +112,59 @@ func (i *otelInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 			return next(ctx, conn)
 		}
 
-		// TODO:
+		ctx = extract(ctx, conn.RequestHeader(), i.cfg.Propagators)
+		name, attrs := buildSpanInfo(conn.Spec().Procedure, conn.Peer().Addr)
+		ctx, span := i.tracer.Start(
+			trace.ContextWithRemoteSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+			name,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(attrs...),
+		)
+		defer span.End()
 
+		err := next(ctx, conn)
+		if err != nil {
+			// TODO: unpack more error info as attributes?
+			// var connectErr *connect.Error
+			// if errors.As(err, &connectErr) {
+			//
+			// }
+
+			code := connect.CodeOf(err)
+			span.SetStatus(codes.Error, code.String())
+			span.SetAttributes(
+				statusCodeAttr(code),
+				statusAttr(code),
+			)
+		}
+
+		return err
 	}
 }
 
 func (i *otelInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		info := &InterceptorInfo{Method: spec.Procedure}
+		conn := next(ctx, spec)
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
-			conn := next(ctx, spec)
 			return conn
 		}
 
-		// TODO:
+		name, attrs := buildSpanInfo(conn.Spec().Procedure, conn.Peer().Addr)
+		ctx, span := i.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
+
+		// propagate the span in the outgoing request
+		inject(ctx, conn.RequestHeader(), i.cfg.Propagators)
+
+		go func() {
+			// TODO: how to detect that a connect-go stream has terminated without calling receive?
+			// if the stream is finished
+			// check the streams errors
+			// if there are errors, set the span error attributes
+			span.End()
+		}()
+
+		return conn
 	}
 }
 
@@ -188,10 +228,10 @@ func statusAttr(c connect.Code) attribute.KeyValue {
 	return ConnectStatusKey.String(c.String())
 }
 
-func extract(ctx context.Context, req connect.AnyRequest, propagators propagation.TextMapPropagator) context.Context {
-	return propagators.Extract(ctx, propagation.HeaderCarrier(req.Header()))
+func extract(ctx context.Context, header http.Header, propagators propagation.TextMapPropagator) context.Context {
+	return propagators.Extract(ctx, propagation.HeaderCarrier(header))
 }
 
-func inject(ctx context.Context, req connect.AnyRequest, propagators propagation.TextMapPropagator) {
-	propagators.Inject(ctx, propagation.HeaderCarrier(req.Header()))
+func inject(ctx context.Context, header http.Header, propagators propagation.TextMapPropagator) {
+	propagators.Inject(ctx, propagation.HeaderCarrier(header))
 }
