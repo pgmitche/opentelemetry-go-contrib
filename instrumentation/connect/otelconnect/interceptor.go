@@ -2,15 +2,18 @@ package otelconnect
 
 import (
 	"context"
+	"errors"
 	"github.com/bufbuild/connect-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	"go.opentelemetry.io/otel/trace"
+	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 const (
@@ -44,7 +47,7 @@ func NewOtelInterceptor(opts ...Option) *otelInterceptor {
 
 func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		info := &InterceptorInfo{Method: req.Spec().Procedure}
+		info := &InterceptorInfo{Method: req.Spec().Procedure, Typ: req.Spec().StreamType}
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
 			return next(ctx, req)
 		}
@@ -107,7 +110,7 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 
 func (i *otelInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		info := &InterceptorInfo{Method: conn.Spec().Procedure}
+		info := &InterceptorInfo{Method: conn.Spec().Procedure, Typ: conn.Spec().StreamType}
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
 			return next(ctx, conn)
 		}
@@ -120,31 +123,78 @@ func (i *otelInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(attrs...),
 		)
-		defer span.End()
 
-		err := next(ctx, conn)
+		otelConn := otelServerConn{
+			StreamingHandlerConn: conn,
+			span:                 span,
+			spanLock:             sync.Once{},
+			headerLock:           sync.Once{},
+		}
+
+		err := next(ctx, otelConn)
 		if err != nil {
-			// TODO: unpack more error info as attributes?
-			// var connectErr *connect.Error
-			// if errors.As(err, &connectErr) {
-			//
-			// }
+			if !errors.Is(err, io.EOF) {
+				// TODO: unpack more error info as attributes?
+				// var connectErr *connect.Error
+				// if errors.As(err, &connectErr) {
+				//
+				// }
 
-			code := connect.CodeOf(err)
-			span.SetStatus(codes.Error, code.String())
-			span.SetAttributes(
-				statusCodeAttr(code),
-				statusAttr(code),
-			)
+				code := connect.CodeOf(err)
+				span.SetStatus(codes.Error, code.String())
+				span.SetAttributes(
+					statusCodeAttr(code),
+					statusAttr(code),
+				)
+			}
 		}
 
 		return err
 	}
 }
 
+var _ connect.StreamingHandlerConn = &otelServerConn{}
+
+type otelServerConn struct {
+	connect.StreamingHandlerConn
+	span       trace.Span
+	spanLock   sync.Once
+	headerLock sync.Once
+}
+
+// Receive ...
+//
+// When the client has finished sending data,
+// Receive returns an error wrapping [io.EOF]
+func (o otelServerConn) Receive(a any) error {
+	err := o.StreamingHandlerConn.Receive(a)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			o.spanLock.Do(func() {
+				o.span.End()
+			})
+		}
+	}
+
+	return err
+}
+
+func (o otelServerConn) Send(a any) error {
+	err := o.StreamingHandlerConn.Send(a)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			o.spanLock.Do(func() {
+				o.span.End()
+			})
+		}
+	}
+
+	return err
+}
+
 func (i *otelInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		info := &InterceptorInfo{Method: spec.Procedure}
+		info := &InterceptorInfo{Method: spec.Procedure, Typ: spec.StreamType}
 		conn := next(ctx, spec)
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
 			return conn
@@ -153,19 +203,82 @@ func (i *otelInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 		name, attrs := buildSpanInfo(conn.Spec().Procedure, conn.Peer().Addr)
 		ctx, span := i.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
 
-		// propagate the span in the outgoing request
-		inject(ctx, conn.RequestHeader(), i.cfg.Propagators)
-
-		go func() {
-			// TODO: how to detect that a connect-go stream has terminated without calling receive?
-			// if the stream is finished
-			// check the streams errors
-			// if there are errors, set the span error attributes
-			span.End()
-		}()
-
-		return conn
+		otelConn := &otelClientConn{
+			StreamingClientConn: conn,
+			span:                span,
+			spanLock:            sync.Once{},
+			headerLock:          sync.Once{},
+		}
+		otelConn.setHeadersOnce(ctx, conn.RequestHeader(), i.cfg.Propagators)
+		return otelConn
 	}
+}
+
+var _ connect.StreamingClientConn = &otelClientConn{}
+
+type otelClientConn struct {
+	connect.StreamingClientConn
+	span       trace.Span
+	spanLock   sync.Once
+	headerLock sync.Once
+}
+
+func (o *otelClientConn) setHeadersOnce(ctx context.Context, header http.Header, p propagation.TextMapPropagator) {
+	// propagate the span in the outgoing request
+	o.headerLock.Do(func() {
+		inject(ctx, header, p)
+	})
+}
+
+// Receive ...
+//
+// When the server is done sending data, the StreamingClientConn's Receive method
+// returns an error wrapping [io.EOF]
+func (o *otelClientConn) Receive(a any) error {
+	err := o.StreamingClientConn.Receive(a)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			o.spanLock.Do(func() {
+				o.span.End()
+			})
+		}
+	}
+
+	return err
+}
+
+// Send ...
+//
+// If the server encounters an error during
+// processing, subsequent calls to the StreamingClientConn's Send method will
+// return an error wrapping [io.EOF]
+func (o *otelClientConn) Send(a any) error {
+	err := o.StreamingClientConn.Send(a)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			o.spanLock.Do(func() {
+				o.span.End()
+			})
+		}
+	}
+
+	return err
+}
+
+func (o *otelClientConn) CloseRequest() error {
+	err := o.StreamingClientConn.CloseRequest()
+	o.spanLock.Do(func() {
+		o.span.End()
+	})
+	return err
+}
+
+func (o *otelClientConn) CloseResponse() error {
+	err := o.StreamingClientConn.CloseResponse()
+	o.spanLock.Do(func() {
+		o.span.End()
+	})
+	return err
 }
 
 // buildSpanInfo returns a span name and all appropriate attributes from the procedure
