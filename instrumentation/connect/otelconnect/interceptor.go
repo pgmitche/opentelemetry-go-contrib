@@ -32,16 +32,10 @@ type otelInterceptor struct {
 
 func NewOtelInterceptor(opts ...Option) *otelInterceptor {
 	cfg := newConfig(opts)
-	tracer := cfg.TracerProvider.Tracer(
-		instrumentationName,
-		trace.WithInstrumentationVersion(SemVersion()),
-	)
-
-	connect.WithInterceptors()
 
 	return &otelInterceptor{
 		cfg:    cfg,
-		tracer: tracer,
+		tracer: cfg.Tracer,
 	}
 }
 

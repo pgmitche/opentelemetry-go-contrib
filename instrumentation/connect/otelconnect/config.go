@@ -23,6 +23,7 @@ type config struct {
 	Filter         Filter
 	Propagators    propagation.TextMapPropagator
 	TracerProvider trace.TracerProvider
+	Tracer         trace.Tracer
 
 	meter             metric.Meter
 	rpcServerDuration syncint64.Histogram
@@ -36,12 +37,18 @@ type Option interface {
 // newConfig returns a config configured with all the passed Options.
 func newConfig(opts []Option) *config {
 	c := &config{
-		Propagators:    otel.GetTextMapPropagator(),
-		TracerProvider: otel.GetTracerProvider(),
+		Propagators: otel.GetTextMapPropagator(),
 	}
 
 	for _, o := range opts {
 		o.apply(c)
+	}
+
+	if c.TracerProvider != nil {
+		c.Tracer = c.TracerProvider.Tracer(
+			instrumentationName,
+			trace.WithInstrumentationVersion(SemVersion()),
+		)
 	}
 
 	return c
