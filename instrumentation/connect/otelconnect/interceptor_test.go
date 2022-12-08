@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -29,54 +30,167 @@ func TestInterceptors(t *testing.T) {
 	// Example of any/all propagators
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}, b3.New(), b3.New(b3.WithInjectEncoding(b3.B3MultipleHeader)), jaeger.Jaeger{}))
 
-	tests := []struct {
-		name          string
-		srvRec        *tracetest.SpanRecorder
-		clientRec     *tracetest.SpanRecorder
-		interceptorFn func(...Option) *otelInterceptor
-	}{
-		{
-			name:          "Unary",
-			srvRec:        tracetest.NewSpanRecorder(),
-			clientRec:     tracetest.NewSpanRecorder(),
-			interceptorFn: NewOtelInterceptor,
-		},
-	}
+	t.Run("Unary", func(t *testing.T) {
+		srvRec := tracetest.NewSpanRecorder()
+		clientRec := tracetest.NewSpanRecorder()
 
-	// FIXME: No propagation, nil propagators
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			mux := http.NewServeMux()
-			mux.Handle(
-				pingv1connect.NewPingServiceHandler(
-					&pingServer{},
-					connect.WithInterceptors(test.interceptorFn(
-						WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(test.srvRec))))),
-				),
-			)
+		mux := http.NewServeMux()
+		mux.Handle(
+			pingv1connect.NewPingServiceHandler(
+				&pingServer{},
+				connect.WithInterceptors(NewOtelInterceptor(
+					WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(srvRec))))),
+			),
+		)
 
-			server := httptest.NewServer(mux)
-			defer server.Close()
+		server := httptest.NewServer(mux)
+		defer server.Close()
 
-			client := pingv1connect.NewPingServiceClient(
-				server.Client(),
-				server.URL,
-				connect.WithInterceptors(test.interceptorFn(WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(test.clientRec))))),
-			)
+		client := pingv1connect.NewPingServiceClient(
+			server.Client(),
+			server.URL,
+			connect.WithInterceptors(NewOtelInterceptor(WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(clientRec))))),
+		)
 
-			res, err := client.Ping(context.Background(), connect.NewRequest(&v1.PingRequest{
-				Number: 0,
-				Text:   "Ping",
-			}))
+		res, err := client.Ping(context.Background(), connect.NewRequest(&v1.PingRequest{
+			Number: 0,
+			Text:   "Ping",
+		}))
 
-			// FIXME: at _minimum_ trace should persist
-			outgoingSpan := test.clientRec.Started()[0]
-			incomingSpan := test.srvRec.Started()[0]
-			require.Equal(t, outgoingSpan.SpanContext().TraceID(), incomingSpan.SpanContext().TraceID())
+		// FIXME: at _minimum_ trace should persist
+		outgoingSpan := clientRec.Started()[0]
+		incomingSpan := srvRec.Started()[0]
+		require.Equal(t, outgoingSpan.SpanContext().TraceID(), incomingSpan.SpanContext().TraceID())
 
-			log.Println(res, err)
-		})
-	}
+		log.Println(res, err)
+	})
+
+	t.Run("ClientStreaming", func(t *testing.T) {
+		srvRec := tracetest.NewSpanRecorder()
+		clientRec := tracetest.NewSpanRecorder()
+
+		mux := http.NewServeMux()
+		mux.Handle(
+			pingv1connect.NewPingServiceHandler(
+				&pingServer{},
+				connect.WithInterceptors(NewOtelInterceptor(
+					WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(srvRec))))),
+			),
+		)
+
+		server := httptest.NewServer(mux)
+		defer server.Close()
+
+		client := pingv1connect.NewPingServiceClient(
+			server.Client(),
+			server.URL,
+			connect.WithInterceptors(NewOtelInterceptor(WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(clientRec))))),
+		)
+
+		stream := client.Sum(context.Background())
+		require.NoError(t, stream.Send(&v1.SumRequest{Number: 1}))
+		res, err := stream.CloseAndReceive()
+		require.NoError(t, err)
+
+		log.Println(res)
+
+		// FIXME: at _minimum_ trace should persist
+		outgoingSpan := clientRec.Started()[0]
+		incomingSpan := srvRec.Started()[0]
+		require.Equal(t, outgoingSpan.SpanContext().TraceID(), incomingSpan.SpanContext().TraceID())
+	})
+
+	t.Run("ServerStreaming", func(t *testing.T) {
+		srvRec := tracetest.NewSpanRecorder()
+		clientRec := tracetest.NewSpanRecorder()
+
+		mux := http.NewServeMux()
+		mux.Handle(
+			pingv1connect.NewPingServiceHandler(
+				&pingServer{},
+				connect.WithInterceptors(NewOtelInterceptor(
+					WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(srvRec))))),
+			),
+		)
+
+		server := httptest.NewServer(mux)
+		defer server.Close()
+
+		client := pingv1connect.NewPingServiceClient(
+			server.Client(),
+			server.URL,
+			connect.WithInterceptors(NewOtelInterceptor(WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(clientRec))))),
+		)
+
+		stream, err := client.CountUp(context.Background(), connect.NewRequest(&v1.CountUpRequest{
+			Number: 0,
+		}))
+
+		require.NoError(t, err)
+		for stream.Receive() {
+		}
+
+		// FIXME: at _minimum_ trace should persist
+		outgoingSpan := clientRec.Started()[0]
+		incomingSpan := srvRec.Started()[0]
+		require.Equal(t, outgoingSpan.SpanContext().TraceID(), incomingSpan.SpanContext().TraceID())
+	})
+
+	t.Run("BidiStreaming", func(t *testing.T) {
+		srvRec := tracetest.NewSpanRecorder()
+		clientRec := tracetest.NewSpanRecorder()
+
+		mux := http.NewServeMux()
+		mux.Handle(
+			pingv1connect.NewPingServiceHandler(
+				&pingServer{},
+				connect.WithInterceptors(NewOtelInterceptor(
+					WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(srvRec))))),
+			),
+		)
+
+		// Bidi requires http/2
+		server := httptest.NewUnstartedServer(mux)
+		server.EnableHTTP2 = true
+		server.StartTLS()
+		defer server.Close()
+
+		client := pingv1connect.NewPingServiceClient(
+			server.Client(),
+			server.URL,
+			connect.WithInterceptors(NewOtelInterceptor(WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(clientRec))))),
+		)
+
+		bidi := client.CumSum(context.Background())
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			require.NoError(t, bidi.Send(&v1.CumSumRequest{Number: 1}))
+			require.NoError(t, bidi.CloseRequest())
+		}()
+
+		go func() {
+			defer wg.Done()
+			for {
+				_, err := bidi.Receive()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+
+				require.NoError(t, err)
+			}
+			require.NoError(t, bidi.CloseResponse())
+		}()
+		wg.Wait()
+
+		// FIXME: at _minimum_ trace should persist
+		outgoingSpan := clientRec.Started()[0]
+		incomingSpan := srvRec.Started()[0]
+		require.Equal(t, outgoingSpan.SpanContext().TraceID(), incomingSpan.SpanContext().TraceID())
+	})
 }
 
 // FIXME:  tidy up - lifted straight from connect tests
