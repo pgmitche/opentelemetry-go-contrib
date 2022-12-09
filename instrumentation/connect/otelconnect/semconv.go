@@ -14,12 +14,15 @@
 
 package otelconnect // import "go.opentelemetry.io/contrib/instrumentation/connect/otelconnect"
 
-// Version is the current release version of the gRPC instrumentation.
-func Version() string {
-	return "0.36.4" // This string is updated by the makefile prerelease action during release
-}
+import (
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+)
 
-// SemVersion is the semantic version to be supplied to tracer/meter creation.
-func SemVersion() string {
-	return "semver:" + Version()
-}
+// Semantic conventions for attribute keys for connect.
+const ()
+
+// Semantic conventions for common RPC attributes.
+var (
+	// Semantic convention for connect as the remoting system.
+	RPCSystemConnect = semconv.RPCSystemKey.String("connect")
+)

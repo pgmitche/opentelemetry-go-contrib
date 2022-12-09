@@ -19,6 +19,7 @@ import (
 const (
 	// ConnectStatusCodeKey is convention for numeric status code of a connect request.
 	ConnectStatusCodeKey = attribute.Key("rpc.connect.status_code")
+
 	// ConnectStatusKey is convention for statuses of a connect request.
 	ConnectStatusKey = attribute.Key("rpc.connect.status")
 )
@@ -102,6 +103,45 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	}
 }
 
+var _ connect.StreamingHandlerConn = &otelServerConn{}
+
+type otelServerConn struct {
+	connect.StreamingHandlerConn
+	span       trace.Span
+	spanLock   sync.Once
+	headerLock sync.Once
+}
+
+// Receive ...
+//
+// When the client has finished sending data,
+// Receive returns an error wrapping [io.EOF]
+func (o otelServerConn) Receive(a any) error {
+	err := o.StreamingHandlerConn.Receive(a)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			o.spanLock.Do(func() {
+				o.span.End()
+			})
+		}
+	}
+
+	return err
+}
+
+func (o otelServerConn) Send(a any) error {
+	err := o.StreamingHandlerConn.Send(a)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			o.spanLock.Do(func() {
+				o.span.End()
+			})
+		}
+	}
+
+	return err
+}
+
 func (i *otelInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		info := &InterceptorInfo{Method: conn.Spec().Procedure, Type: conn.Spec().StreamType}
@@ -144,67 +184,6 @@ func (i *otelInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 		}
 
 		return err
-	}
-}
-
-var _ connect.StreamingHandlerConn = &otelServerConn{}
-
-type otelServerConn struct {
-	connect.StreamingHandlerConn
-	span       trace.Span
-	spanLock   sync.Once
-	headerLock sync.Once
-}
-
-// Receive ...
-//
-// When the client has finished sending data,
-// Receive returns an error wrapping [io.EOF]
-func (o otelServerConn) Receive(a any) error {
-	err := o.StreamingHandlerConn.Receive(a)
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			o.spanLock.Do(func() {
-				o.span.End()
-			})
-		}
-	}
-
-	return err
-}
-
-func (o otelServerConn) Send(a any) error {
-	err := o.StreamingHandlerConn.Send(a)
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			o.spanLock.Do(func() {
-				o.span.End()
-			})
-		}
-	}
-
-	return err
-}
-
-func (i *otelInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		info := &InterceptorInfo{Method: spec.Procedure, Type: spec.StreamType}
-		conn := next(ctx, spec)
-		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
-			return conn
-		}
-
-		name, attrs := buildSpanInfo(conn.Spec().Procedure, conn.Peer().Addr)
-		ctx, span := i.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
-
-		otelConn := &otelClientConn{
-			StreamingClientConn: conn,
-			span:                span,
-			spanLock:            sync.Once{},
-			headerLock:          sync.Once{},
-		}
-		otelConn.setHeadersOnce(ctx, conn.RequestHeader(), i.cfg.Propagators)
-		return otelConn
 	}
 }
 
@@ -275,12 +254,34 @@ func (o *otelClientConn) CloseResponse() error {
 	return err
 }
 
+func (i *otelInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		info := &InterceptorInfo{Method: spec.Procedure, Type: spec.StreamType}
+		conn := next(ctx, spec)
+		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
+			return conn
+		}
+
+		name, attrs := buildSpanInfo(conn.Spec().Procedure, conn.Peer().Addr)
+		ctx, span := i.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
+
+		otelConn := &otelClientConn{
+			StreamingClientConn: conn,
+			span:                span,
+			spanLock:            sync.Once{},
+			headerLock:          sync.Once{},
+		}
+		otelConn.setHeadersOnce(ctx, conn.RequestHeader(), i.cfg.Propagators)
+		return otelConn
+	}
+}
+
 // buildSpanInfo returns a span name and all appropriate attributes from the procedure
 // and peer address.
 //
 // Lifted from the gRPC instrumentation, as the effect is ultimately the same
 func buildSpanInfo(fullMethod, peerAddress string) (string, []attribute.KeyValue) {
-	attrs := []attribute.KeyValue{}
+	attrs := []attribute.KeyValue{RPCSystemConnect}
 	name, mAttrs := parseFullMethod(fullMethod)
 	attrs = append(attrs, mAttrs...)
 	attrs = append(attrs, peerAttr(peerAddress)...)

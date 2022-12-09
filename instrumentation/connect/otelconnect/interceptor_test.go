@@ -196,15 +196,9 @@ func TestInterceptors(t *testing.T) {
 // FIXME:  tidy up - lifted straight from connect tests
 type pingServer struct {
 	pingv1connect.UnimplementedPingServiceHandler
-
-	//checkMetadata bool
 }
 
 func (p pingServer) Ping(ctx context.Context, request *connect.Request[v1.PingRequest]) (*connect.Response[v1.PingResponse], error) {
-	//if err := expectClientHeader(p.checkMetadata, request); err != nil {
-	//	return nil, err
-	//}
-
 	if request.Peer().Addr == "" {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("no peer address"))
 	}
@@ -213,23 +207,15 @@ func (p pingServer) Ping(ctx context.Context, request *connect.Request[v1.PingRe
 		return nil, connect.NewError(connect.CodeInternal, errors.New("no peer protocol"))
 	}
 
-	response := connect.NewResponse(
+	return connect.NewResponse(
 		&v1.PingResponse{
 			Number: request.Msg.Number,
 			Text:   request.Msg.Text,
 		},
-	)
-
-	//response.Header().Set(handlerHeader, headerValue)
-	//response.Trailer().Set(handlerTrailer, trailerValue)
-	return response, nil
+	), nil
 }
 
 func (p pingServer) Fail(ctx context.Context, request *connect.Request[v1.FailRequest]) (*connect.Response[v1.FailResponse], error) {
-	//if err := expectClientHeader(p.checkMetadata, request); err != nil {
-	//	return nil, err
-	//}
-
 	if request.Peer().Addr == "" {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("no peer address"))
 	}
@@ -238,19 +224,10 @@ func (p pingServer) Fail(ctx context.Context, request *connect.Request[v1.FailRe
 		return nil, connect.NewError(connect.CodeInternal, errors.New("no peer protocol"))
 	}
 
-	err := connect.NewError(connect.Code(request.Msg.Code), errors.New(errorMessage))
-	//err.Meta().Set(handlerHeader, headerValue)
-	//err.Meta().Set(handlerTrailer, trailerValue)
-	return nil, err
+	return nil, connect.NewError(connect.Code(request.Msg.Code), errors.New(errorMessage))
 }
 
 func (p pingServer) Sum(ctx context.Context, stream *connect.ClientStream[v1.SumRequest]) (*connect.Response[v1.SumResponse], error) {
-	//if p.checkMetadata {
-	//	if err := expectMetadata(stream.RequestHeader(), "header", clientHeader, headerValue); err != nil {
-	//		return nil, err
-	//	}
-	//}
-
 	if stream.Peer().Addr == "" {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("no peer address"))
 	}
@@ -268,17 +245,10 @@ func (p pingServer) Sum(ctx context.Context, stream *connect.ClientStream[v1.Sum
 		return nil, stream.Err()
 	}
 
-	response := connect.NewResponse(&v1.SumResponse{Sum: sum})
-	//response.Header().Set(handlerHeader, headerValue)
-	//response.Trailer().Set(handlerTrailer, trailerValue)
-	return response, nil
+	return connect.NewResponse(&v1.SumResponse{Sum: sum}), nil
 }
 
 func (p pingServer) CountUp(ctx context.Context, request *connect.Request[v1.CountUpRequest], stream *connect.ServerStream[v1.CountUpResponse]) error {
-	//if err := expectClientHeader(p.checkMetadata, request); err != nil {
-	//	return err
-	//}
-
 	if request.Peer().Addr == "" {
 		return connect.NewError(connect.CodeInternal, errors.New("no peer address"))
 	}
@@ -294,8 +264,6 @@ func (p pingServer) CountUp(ctx context.Context, request *connect.Request[v1.Cou
 		))
 	}
 
-	//stream.ResponseHeader().Set(handlerHeader, headerValue)
-	//stream.ResponseTrailer().Set(handlerTrailer, trailerValue)
 	for i := int64(1); i <= request.Msg.Number; i++ {
 		if err := stream.Send(&v1.CountUpResponse{Number: i}); err != nil {
 			return err
@@ -307,11 +275,6 @@ func (p pingServer) CountUp(ctx context.Context, request *connect.Request[v1.Cou
 
 func (p pingServer) CumSum(ctx context.Context, stream *connect.BidiStream[v1.CumSumRequest, v1.CumSumResponse]) error {
 	var sum int64
-	//if p.checkMetadata {
-	//	if err := expectMetadata(stream.RequestHeader(), "header", clientHeader, headerValue); err != nil {
-	//		return err
-	//	}
-	//}
 
 	if stream.Peer().Addr == "" {
 		return connect.NewError(connect.CodeInternal, errors.New("no peer address"))
@@ -321,8 +284,6 @@ func (p pingServer) CumSum(ctx context.Context, stream *connect.BidiStream[v1.Cu
 		return connect.NewError(connect.CodeInternal, errors.New("no peer address"))
 	}
 
-	//stream.ResponseHeader().Set(handlerHeader, headerValue)
-	//stream.ResponseTrailer().Set(handlerTrailer, trailerValue)
 	for {
 		msg, err := stream.Receive()
 		if errors.Is(err, io.EOF) {
