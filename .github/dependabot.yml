@@ -209,6 +209,15 @@ updates:
       interval: weekly
       day: sunday
   - package-ecosystem: gomod
+    directory: /instrumentation/github.com/bufbuild/connect-go/otelconnect
+    labels:
+      - dependencies
+      - go
+      - Skip Changelog
+    schedule:
+      interval: weekly
+      day: sunday
+  - package-ecosystem: gomod
     directory: /instrumentation/github.com/emicklei/go-restful/otelrestful
     labels:
       - dependencies
