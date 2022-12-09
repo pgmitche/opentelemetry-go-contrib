@@ -7,6 +7,6 @@ import "github.com/bufbuild/connect-go"
 type InterceptorInfo struct {
 	// Method is method name registered to UnaryClient and StreamClient
 	Method string
-	// Typ is the RPC's stream type, whether unary, server/client side or bidi
-	Typ connect.StreamType
+	// Type is the RPC's stream type, whether unary, server/client side or bidi
+	Type connect.StreamType
 }

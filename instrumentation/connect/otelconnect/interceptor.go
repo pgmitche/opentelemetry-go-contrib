@@ -41,7 +41,7 @@ func NewOtelInterceptor(opts ...Option) *otelInterceptor {
 
 func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		info := &InterceptorInfo{Method: req.Spec().Procedure, Typ: req.Spec().StreamType}
+		info := &InterceptorInfo{Method: req.Spec().Procedure, Type: req.Spec().StreamType}
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
 			return next(ctx, req)
 		}
@@ -104,7 +104,7 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 
 func (i *otelInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		info := &InterceptorInfo{Method: conn.Spec().Procedure, Typ: conn.Spec().StreamType}
+		info := &InterceptorInfo{Method: conn.Spec().Procedure, Type: conn.Spec().StreamType}
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
 			return next(ctx, conn)
 		}
@@ -188,7 +188,7 @@ func (o otelServerConn) Send(a any) error {
 
 func (i *otelInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		info := &InterceptorInfo{Method: spec.Procedure, Typ: spec.StreamType}
+		info := &InterceptorInfo{Method: spec.Procedure, Type: spec.StreamType}
 		conn := next(ctx, spec)
 		if i.cfg.Filter != nil && !i.cfg.Filter(info) {
 			return conn
@@ -277,6 +277,8 @@ func (o *otelClientConn) CloseResponse() error {
 
 // buildSpanInfo returns a span name and all appropriate attributes from the procedure
 // and peer address.
+//
+// Lifted from the gRPC instrumentation, as the effect is ultimately the same
 func buildSpanInfo(fullMethod, peerAddress string) (string, []attribute.KeyValue) {
 	attrs := []attribute.KeyValue{}
 	name, mAttrs := parseFullMethod(fullMethod)
@@ -288,6 +290,8 @@ func buildSpanInfo(fullMethod, peerAddress string) (string, []attribute.KeyValue
 // parseFullMethod returns a span name following the OpenTelemetry semantic
 // conventions as well as all applicable span attribute.KeyValue attributes based
 // on a procedure.
+//
+// Lifted from the gRPC instrumentation, as the effect is ultimately the same
 func parseFullMethod(fullMethod string) (string, []attribute.KeyValue) {
 	name := strings.TrimLeft(fullMethod, "/")
 	parts := strings.SplitN(name, "/", 2)
@@ -309,6 +313,8 @@ func parseFullMethod(fullMethod string) (string, []attribute.KeyValue) {
 }
 
 // peerAttr returns attributes about the peer address.
+//
+// Lifted from the gRPC instrumentation, as the effect is ultimately the same
 func peerAttr(addr string) []attribute.KeyValue {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
