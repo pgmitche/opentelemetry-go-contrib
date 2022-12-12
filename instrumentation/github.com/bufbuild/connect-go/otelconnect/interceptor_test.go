@@ -42,6 +42,7 @@ const (
 	errorMessage = "RIP"
 )
 
+// TODO: add span event assertions
 func TestInterceptors(t *testing.T) {
 	// Example of any/all propagators
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}, b3.New(), b3.New(b3.WithInjectEncoding(b3.B3MultipleHeader)), jaeger.Jaeger{}))
@@ -156,6 +157,10 @@ func TestInterceptors(t *testing.T) {
 		_, err := stream.CloseAndReceive()
 		require.NoError(t, err)
 
+		// Regardless of how many times data is sent/received, we should only have one span
+		require.Len(t, clientRec.Started(), 1)
+		require.Len(t, srvRec.Started(), 1)
+
 		outgoingSpan := clientRec.Started()[0]
 		incomingSpan := srvRec.Started()[0]
 		inspectAndCompareSpans(t,
@@ -199,6 +204,10 @@ func TestInterceptors(t *testing.T) {
 		for stream.Receive() {
 			// empty the stream
 		}
+
+		// Regardless of how many times data is sent/received, we should only have one span
+		require.Len(t, clientRec.Started(), 1)
+		require.Len(t, srvRec.Started(), 1)
 
 		outgoingSpan := clientRec.Started()[0]
 		incomingSpan := srvRec.Started()[0]
@@ -262,6 +271,10 @@ func TestInterceptors(t *testing.T) {
 		}()
 		wg.Wait()
 
+		// Regardless of how many times data is sent/received, we should only have one span
+		require.Len(t, clientRec.Started(), 1)
+		require.Len(t, srvRec.Started(), 1)
+
 		outgoingSpan := clientRec.Started()[0]
 		incomingSpan := srvRec.Started()[0]
 		inspectAndCompareSpans(t,
@@ -309,6 +322,10 @@ func TestInterceptors(t *testing.T) {
 		}
 		require.NoError(t, bidi.CloseRequest())
 		require.NoError(t, bidi.CloseResponse())
+
+		// Regardless of how many times data is sent/received, we should only have one span
+		require.Len(t, clientRec.Started(), 1)
+		require.Len(t, srvRec.Started(), 1)
 
 		// there must be many events
 		// the client span should have sent/recv, sent/recv, close/close
