@@ -117,13 +117,13 @@ func TestInterceptors(t *testing.T) {
 		inspectAndCompareSpans(t,
 			incomingSpan,
 			[]attribute.KeyValue{
-				semconv.RPCMethodKey.String("Ping"),
+				semconv.RPCMethodKey.String("Fail"),
 				ConnectStatusCodeKey.Int(int(connect.CodeAborted)),
 				ConnectStatusKey.String(connect.CodeAborted.String()),
 			},
 			outgoingSpan,
 			[]attribute.KeyValue{
-				semconv.RPCMethodKey.String("Ping"),
+				semconv.RPCMethodKey.String("Fail"),
 				ConnectStatusCodeKey.Int(int(connect.CodeAborted)),
 				ConnectStatusKey.String(connect.CodeAborted.String()),
 			}, true)
@@ -158,7 +158,15 @@ func TestInterceptors(t *testing.T) {
 
 		outgoingSpan := clientRec.Started()[0]
 		incomingSpan := srvRec.Started()[0]
-		inspectAndCompareSpans(t, incomingSpan, []attribute.KeyValue{{}}, outgoingSpan, []attribute.KeyValue{{}}, false)
+		inspectAndCompareSpans(t,
+			incomingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("Sum"),
+			},
+			outgoingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("Sum"),
+			}, false)
 	})
 
 	t.Run("ServerStreaming", func(t *testing.T) {
@@ -194,7 +202,15 @@ func TestInterceptors(t *testing.T) {
 
 		outgoingSpan := clientRec.Started()[0]
 		incomingSpan := srvRec.Started()[0]
-		inspectAndCompareSpans(t, incomingSpan, []attribute.KeyValue{{}}, outgoingSpan, []attribute.KeyValue{{}}, false)
+		inspectAndCompareSpans(t,
+			incomingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("CountUp"),
+			},
+			outgoingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("CountUp"),
+			}, false)
 	})
 
 	t.Run("BidiStreaming", func(t *testing.T) {
@@ -240,7 +256,6 @@ func TestInterceptors(t *testing.T) {
 				if errors.Is(err, io.EOF) {
 					break
 				}
-
 				require.NoError(t, err)
 			}
 			require.NoError(t, bidi.CloseResponse())
@@ -249,7 +264,66 @@ func TestInterceptors(t *testing.T) {
 
 		outgoingSpan := clientRec.Started()[0]
 		incomingSpan := srvRec.Started()[0]
-		inspectAndCompareSpans(t, incomingSpan, []attribute.KeyValue{{}}, outgoingSpan, []attribute.KeyValue{{}}, false)
+		inspectAndCompareSpans(t,
+			incomingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("CumSum"),
+			},
+			outgoingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("CumSum"),
+			}, false)
+	})
+
+	t.Run("BidiStreaming-Multi", func(t *testing.T) {
+		srvRec := tracetest.NewSpanRecorder()
+		clientRec := tracetest.NewSpanRecorder()
+
+		mux := http.NewServeMux()
+		mux.Handle(
+			pingv1connect.NewPingServiceHandler(
+				&pingServer{},
+				connect.WithInterceptors(NewOtelInterceptor(
+					WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(srvRec))))),
+			),
+		)
+
+		// Bidi requires http/2
+		server := httptest.NewUnstartedServer(mux)
+		server.EnableHTTP2 = true
+		server.StartTLS()
+		defer server.Close()
+
+		client := pingv1connect.NewPingServiceClient(
+			server.Client(),
+			server.URL,
+			connect.WithInterceptors(NewOtelInterceptor(WithTracerProvider(trace.NewTracerProvider(trace.WithSpanProcessor(clientRec))))),
+		)
+
+		bidi := client.CumSum(context.Background())
+
+		for i := 0; i < 2; i++ {
+			require.NoError(t, bidi.Send(&v1.CumSumRequest{Number: int64(i)}))
+			_, err := bidi.Receive()
+			require.NoError(t, err)
+		}
+		require.NoError(t, bidi.CloseRequest())
+		require.NoError(t, bidi.CloseResponse())
+
+		// there must be many events
+		// the client span should have sent/recv, sent/recv, close/close
+		outgoingSpan := clientRec.Started()[0]
+		// the server span should have sent/recv, sent/recv
+		incomingSpan := srvRec.Started()[0]
+		inspectAndCompareSpans(t,
+			incomingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("CumSum"),
+			},
+			outgoingSpan,
+			[]attribute.KeyValue{
+				semconv.RPCMethodKey.String("CumSum"),
+			}, false)
 	})
 }
 

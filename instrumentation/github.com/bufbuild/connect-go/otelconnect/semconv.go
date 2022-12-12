@@ -15,14 +15,30 @@
 package otelconnect // import "go.opentelemetry.io/contrib/instrumentation/connect/otelconnect"
 
 import (
+	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 )
 
 // Semantic conventions for attribute keys for connect.
-const ()
+const (
+	// Name of message transmitted or received.
+	RPCNameKey = attribute.Key("name")
+
+	// Type of message transmitted or received.
+	RPCEventTypeKey = attribute.Key("type")
+)
 
 // Semantic conventions for common RPC attributes.
 var (
 	// Semantic convention for connect as the remoting system.
 	RPCSystemConnect = semconv.RPCSystemKey.String("connect")
+
+	// Semantic convention for a message named message.
+	RPCNameMessage = RPCNameKey.String("message")
+
+	// Semantic conventions for RPC message types.
+	RPCEventTypeSent           = RPCEventTypeKey.String("SENT")
+	RPCEventTypeReceived       = RPCEventTypeKey.String("RECEIVED")
+	RPCEventTypeClosedRequest  = RPCEventTypeKey.String("CLOSED-REQ")
+	RPCEventTypeClosedResponse = RPCEventTypeKey.String("CLOSED-RES")
 )

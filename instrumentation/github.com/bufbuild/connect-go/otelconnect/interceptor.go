@@ -68,7 +68,11 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 
 			// propagate the span in the outgoing request
 			inject(ctx, req.Header(), i.cfg.Propagators)
+
+			span.AddEvent("SENT", trace.WithAttributes(RPCEventTypeSent))
 			res, err := next(ctx, req)
+			span.AddEvent("RECEIVED", trace.WithAttributes(RPCEventTypeReceived))
+
 			if err != nil {
 				// TODO: unpack more error info as attributes?
 				// var connectErr *connect.Error
@@ -96,7 +100,11 @@ func (i *otelInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			)
 
 			defer span.End()
+
+			span.AddEvent("RECEIVED", trace.WithAttributes(RPCEventTypeReceived))
 			res, err := next(ctx, req)
+			span.AddEvent("SENT", trace.WithAttributes(RPCEventTypeSent))
+
 			if err != nil {
 				// TODO: unpack more error info as attributes?
 				// var connectErr *connect.Error
@@ -132,12 +140,20 @@ type otelServerConn struct {
 // Receive returns an error wrapping [io.EOF]
 func (o otelServerConn) Receive(a any) error {
 	err := o.StreamingHandlerConn.Receive(a)
+
+	var ended bool
 	if err != nil {
 		if errors.Is(err, io.EOF) {
+			ended = true
+			o.span.AddEvent("RECEIVED", trace.WithAttributes(RPCEventTypeClosedRequest))
 			o.spanLock.Do(func() {
 				o.span.End()
 			})
 		}
+	}
+
+	if !ended {
+		o.span.AddEvent("RECEIVED", trace.WithAttributes(RPCEventTypeReceived))
 	}
 
 	return err
@@ -145,6 +161,9 @@ func (o otelServerConn) Receive(a any) error {
 
 func (o otelServerConn) Send(a any) error {
 	err := o.StreamingHandlerConn.Send(a)
+
+	o.span.AddEvent("SENT", trace.WithAttributes(RPCEventTypeSent))
+
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			o.spanLock.Do(func() {
@@ -223,6 +242,9 @@ func (o *otelClientConn) setHeadersOnce(ctx context.Context, header http.Header,
 // returns an error wrapping [io.EOF]
 func (o *otelClientConn) Receive(a any) error {
 	err := o.StreamingClientConn.Receive(a)
+
+	o.span.AddEvent("RECEIVED", trace.WithAttributes(RPCEventTypeReceived))
+
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			o.spanLock.Do(func() {
@@ -241,6 +263,9 @@ func (o *otelClientConn) Receive(a any) error {
 // return an error wrapping [io.EOF]
 func (o *otelClientConn) Send(a any) error {
 	err := o.StreamingClientConn.Send(a)
+
+	o.span.AddEvent("SENT", trace.WithAttributes(RPCEventTypeSent))
+
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			o.spanLock.Do(func() {
@@ -254,6 +279,9 @@ func (o *otelClientConn) Send(a any) error {
 
 func (o *otelClientConn) CloseRequest() error {
 	err := o.StreamingClientConn.CloseRequest()
+
+	o.span.AddEvent("CLOSED", trace.WithAttributes(RPCEventTypeClosedRequest))
+
 	o.spanLock.Do(func() {
 		o.span.End()
 	})
@@ -262,6 +290,9 @@ func (o *otelClientConn) CloseRequest() error {
 
 func (o *otelClientConn) CloseResponse() error {
 	err := o.StreamingClientConn.CloseResponse()
+
+	o.span.AddEvent("CLOSED", trace.WithAttributes(RPCEventTypeClosedResponse))
+
 	o.spanLock.Do(func() {
 		o.span.End()
 	})
